@@ -13,8 +13,10 @@ from torch_geometric.data import HeteroData
 from torch_geometric.typing import NodeType
 from torch_geometric.utils import sort_edge_index
 
-from relbench.base import Database, EntityTask, RecommendationTask, Table, TaskType
+from relbench.base import Database, EntityTask, RecommendationTask, Table, TaskType, MultiEntityTask
 from relbench.modeling.utils import remove_pkey_fkey, to_unix_time
+
+SAMPLE_NODE_TABLE_NAME = "sample_nodes"
 
 
 def make_pkey_fkey_graph(
@@ -172,6 +174,37 @@ def get_node_train_table_input(
 
     return NodeTrainTableInput(
         nodes=(task.entity_table, nodes),
+        time=time,
+        target=target,
+        transform=transform,
+    )
+
+
+def get_multi_entity_table_input(
+    sample_table: Table, task: MultiEntityTask, split: str
+) -> NodeTrainTableInput:
+    subset = sample_table.df[sample_table.df["split"] == split]
+    nodes = torch.from_numpy(subset[sample_table.pkey_col].astype(int).values)
+
+    time: Optional[Tensor] = None
+    if sample_table.time_col is not None:
+        time = torch.from_numpy(to_unix_time(sample_table.df[sample_table.time_col]))
+
+    target: Optional[Tensor] = None
+    transform: Optional[AttachTargetTransform] = None
+    if split != "test":
+        tgts = task.get_table(split).df[task.target_col]
+        target_type = float
+        if task.task_type == TaskType.MULTICLASS_CLASSIFICATION:
+            target_type = int
+        if task.task_type == TaskType.MULTILABEL_CLASSIFICATION:
+            target = torch.from_numpy(np.stack(tgts.values))
+        else:
+            target = torch.from_numpy(tgts.values.astype(target_type))
+        transform = AttachTargetTransform(task.entity_table, target)
+
+    return NodeTrainTableInput(
+        nodes=(SAMPLE_NODE_TABLE_NAME, nodes),
         time=time,
         target=target,
         transform=transform,
