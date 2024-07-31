@@ -4,7 +4,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Union, Tuple
 
 import numpy as np
 import pandas as pd
@@ -18,9 +18,12 @@ from torch_geometric.loader import NeighborLoader
 from torch_geometric.seed import seed_everything
 from tqdm import tqdm
 
-from relbench.base import Dataset, EntityTask, Table, TaskType
+from relbench.base import Dataset, EntityTask, Table, TaskType, MultiEntityTask
 from relbench.datasets import get_dataset
-from relbench.modeling.graph import get_node_train_table_input, make_pkey_fkey_graph
+from relbench.modeling.graph import (
+    get_node_train_table_input, make_pkey_fkey_graph,
+    get_multi_entity_table_input, SAMPLE_NODE_TABLE_NAME
+)
 from relbench.modeling.utils import get_stype_proposal
 from relbench.tasks import get_task, get_task_names
 
@@ -82,37 +85,80 @@ elif args.include_label_tables == "task_only":
 else:
     tasks_to_add = []
 
+
+def _make_label_table(task: Union[EntityTask, MultiEntityTask]) -> Tuple[Table, Dict[str, stype]]:
+    """ Makes a table with labels for the given task. To be used as features for training. """
+    label_df = pd.concat([
+        t.get_table("train").df,
+        t.get_table("val").df,
+        t.get_table("test", mask_input_cols=False).df
+    ])
+    # censor labels according to eval time
+    label_df[t.time_col] = label_df[t.time_col] + t.timedelta
+    col_to_table = {t.entity_col: t.entity_table} if isinstance(t, EntityTask) \
+        else t.entities
+    table = Table(
+        df=label_df,
+        fkey_col_to_pkey_table=col_to_table,
+        pkey_col=None,
+        time_col=task.time_col,
+    )
+    target_stype = stype.numerical if task.task_type == TaskType.REGRESSION \
+        else stype.categorical
+    col_to_stype = {
+        task.entity_col: stype.numerical,
+        task.time_col: stype.temporal,
+        task.target_col: target_stype
+    }
+    return table, col_to_stype
+
+
 db = dataset.get_db()
 # add (time-censored) labels tables to the db
 for task_name in tasks_to_add:
     t = get_task(args.dataset, task_name)
-    if not isinstance(t, EntityTask):
+    if not isinstance(t, (EntityTask, MultiEntityTask)):
         continue
     labels_table_name = f"{task_name}_labels"
-    label_df = pd.concat(
-        [
-            t.get_table("train").df,
-            t.get_table("val").df,
-            # test not included b/c labels are not revealed
-        ]
-    )
-    # time-censoring labels
-    label_df[t.time_col] = label_df[t.time_col] + t.timedelta
-    db.table_dict[labels_table_name] = Table(
-        df=label_df,
-        fkey_col_to_pkey_table={t.entity_col: t.entity_table},
-        pkey_col=None,
-        time_col=t.time_col,
-    )
-    col_to_stype_dict[labels_table_name] = {
-        t.entity_col: stype.numerical,
-        t.time_col: stype.timestamp,
-        t.target_col: stype.numerical,
-    }
+    ltable, col_to_stype = _make_label_table(t)
+    db.table_dict[labels_table_name] = ltable
+    col_to_stype_dict[labels_table_name] = col_to_stype
 
 cache_name = (
     args.include_label_tables if args.include_label_tables != "task_only" else args.task
 )
+
+if isinstance(task, MultiEntityTask):
+    # add samples nodes for prediction
+    def _make_sample_table(task: MultiEntityTask) -> Tuple[Table, Dict[str, stype]]:
+        """ Utility function to create sample nodes for multi-entity tasks. """
+        sample_df = pd.concat([
+            t.get_table("train", mask_input_cols=True).df.assign(split="train"),
+            t.get_table("val", mask_input_cols=True).df.assign(split="val"),
+            t.get_table("test", mask_input_cols=True).df.assign(split="test")
+        ])
+        sample_df["sample_id"] = np.arange(len(sample_df))
+        table = Table(
+            df=sample_df,
+            fkey_col_to_pkey_table=task.entities,
+            pkey_col="sample_id",
+            time_col=task.time_col,
+        )
+        target_stype = stype.numerical if task.task_type == TaskType.REGRESSION \
+            else stype.categorical
+        col_to_stype = {
+            table.pkey_col: stype.numerical,
+            **{col: stype.numerical for col in task.entity_cols},
+            task.time_col: stype.temporal,
+            task.target_col: target_stype
+        }
+        return table, col_to_stype
+
+    sample_table, col_to_stype = _make_sample_table(task)
+    db.table_dict[SAMPLE_NODE_TABLE_NAME] = sample_table
+    col_to_stype_dict[SAMPLE_NODE_TABLE_NAME] = col_to_stype
+
+
 data, col_stats_dict = make_pkey_fkey_graph(
     db,
     col_to_stype_dict=col_to_stype_dict,
@@ -148,8 +194,11 @@ else:
 
 loader_dict: Dict[str, NeighborLoader] = {}
 for split in ["train", "val", "test"]:
-    table = task.get_table(split)
-    table_input = get_node_train_table_input(table=table, task=task)
+    if isinstance(task, MultiEntityTask):
+        table_input = get_multi_entity_table_input(sample_table, task, split)
+    else:
+        table = task.get_table(split)
+        table_input = get_node_train_table_input(table=table, task=task)
     entity_table = table_input.nodes[0]
     loader_dict[split] = NeighborLoader(
         data,
