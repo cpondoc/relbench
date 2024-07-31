@@ -3,6 +3,7 @@ from .dataset import Dataset
 from .table import Table
 from .task_base import BaseTask, TaskType
 from .task_entity import EntityTask
+from .task_multientity import MultiEntityTask
 from .task_recommendation import RecommendationTask
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "TaskType",
     "RecommendationTask",
     "EntityTask",
+    "MultiEntityTask",
 ]
