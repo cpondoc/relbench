@@ -201,7 +201,7 @@ def get_multi_entity_table_input(
             target = torch.from_numpy(np.stack(tgts.values))
         else:
             target = torch.from_numpy(tgts.values.astype(target_type))
-        transform = AttachTargetTransform(task.entity_table, target)
+        transform = AttachTargetTransform(SAMPLE_NODE_TABLE_NAME, target)
 
     return NodeTrainTableInput(
         nodes=(SAMPLE_NODE_TABLE_NAME, nodes),
