@@ -89,9 +89,9 @@ else:
 def _make_label_table(task: Union[EntityTask, MultiEntityTask]) -> Tuple[Table, Dict[str, stype]]:
     """ Makes a table with labels for the given task. To be used as features for training. """
     label_df = pd.concat([
-        t.get_table("train").df,
-        t.get_table("val").df,
-        t.get_table("test", mask_input_cols=False).df
+        task.get_table("train").df,
+        task.get_table("val").df,
+        task.get_table("test", mask_input_cols=False).df
     ])
     # censor labels according to eval time
     label_df[t.time_col] = label_df[t.time_col] + t.timedelta
@@ -107,7 +107,7 @@ def _make_label_table(task: Union[EntityTask, MultiEntityTask]) -> Tuple[Table, 
         else stype.categorical
     col_to_stype = {
         task.entity_col: stype.numerical,
-        task.time_col: stype.temporal,
+        task.time_col: stype.timestamp,
         task.target_col: target_stype
     }
     return table, col_to_stype
@@ -144,13 +144,10 @@ if isinstance(task, MultiEntityTask):
             pkey_col="sample_id",
             time_col=task.time_col,
         )
-        target_stype = stype.numerical if task.task_type == TaskType.REGRESSION \
-            else stype.categorical
         col_to_stype = {
             table.pkey_col: stype.numerical,
             **{col: stype.numerical for col in task.entity_cols},
-            task.time_col: stype.temporal,
-            task.target_col: target_stype
+            task.time_col: stype.timestamp,
         }
         return table, col_to_stype
 
